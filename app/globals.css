@@ -24,3 +24,53 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Fake cursor styles for the demo */
+.fake-cursor {
+  width: 18px;
+  height: 18px;
+  position: fixed;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -50%);
+  border-radius: 9999px;
+  border: 2px solid rgba(17, 17, 17, 0.9);
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  z-index: 2147483647; /* on top */
+  transition: opacity 150ms ease;
+}
+
+.fake-cursor::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  background: rgba(17, 17, 17, 0.95);
+  border-radius: 9999px;
+  transform: translate(-50%, -50%);
+}
+
+/* quick pulse ring when clicking */
+.fake-cursor.click::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 22px;
+  height: 22px;
+  border: 2px solid rgba(59, 130, 246, 0.6);
+  border-radius: 9999px;
+  transform: translate(-50%, -50%) scale(0.8);
+  animation: cursor-ring 280ms ease-out forwards;
+}
+
+@keyframes cursor-ring {
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.4);
+  }
+}
