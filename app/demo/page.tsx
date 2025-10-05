@@ -1,222 +1,13 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-
-// Types for the public API
-export type GuideAction = "none" | "click" | "drag";
-export type GuideOptions = {
-  action?: GuideAction;
-  durationMs?: number; // total travel duration
-  easing?: "ease" | "ease-in" | "ease-out" | "ease-in-out" | "linear";
-  offset?: { x?: number; y?: number };
-  highlight?: boolean; // briefly highlight target when reached
-  // Drag-specific options:
-  toValue?: number; // for input[type="range"] drag target value
-  toElementId?: string; // general drag target element id
-};
-
-// Cursor controller (DOM-based, no React re-renders)
-function getOrCreateCursor(): HTMLDivElement {
-  const id = "demo-fake-cursor";
-  let cursor = document.getElementById(id) as HTMLDivElement | null;
-  if (!cursor) {
-    cursor = document.createElement("div");
-    cursor.id = id;
-    cursor.className = "fake-cursor";
-    cursor.style.position = "fixed";
-    cursor.style.left = "20px";
-    cursor.style.top = "20px";
-    cursor.style.opacity = "0"; // start hidden
-    cursor.style.transition = "opacity 150ms ease";
-    document.body.appendChild(cursor);
-  }
-  return cursor;
-}
-
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
-}
-
-function easeInOutCubic(t: number) {
-  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-}
-
-async function animatePosition(
-  el: HTMLElement,
-  from: { x: number; y: number },
-  to: { x: number; y: number },
-  durationMs: number,
-  easing: GuideOptions["easing"] = "ease-in-out"
-) {
-  const start = performance.now();
-  const easeFn = easing === "linear" ? (t: number) => t : easeInOutCubic;
-
-  return new Promise<void>((resolve) => {
-    function frame(now: number) {
-      const t = clamp((now - start) / durationMs, 0, 1);
-      const k = easeFn(t);
-      const x = from.x + (to.x - from.x) * k;
-      const y = from.y + (to.y - from.y) * k;
-      el.style.left = `${x}px`;
-      el.style.top = `${y}px`;
-      if (t < 1) requestAnimationFrame(frame);
-      else resolve();
-    }
-    requestAnimationFrame(frame);
-  });
-}
-
-function getCenterPoint(el: Element) {
-  const r = el.getBoundingClientRect();
-  return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-}
-
-function applyOffset(p: { x: number; y: number }, offset?: { x?: number; y?: number }) {
-  return { x: p.x + (offset?.x ?? 0), y: p.y + (offset?.y ?? 0) };
-}
-
-function dispatchMouseLike(
-  target: Element,
-  type: string,
-  point: { x: number; y: number },
-  extra?: any
-) {
-  const common = {
-    bubbles: true,
-    cancelable: true,
-    view: window,
-    clientX: point.x,
-    clientY: point.y,
-    ...extra,
-  };
-
-  try {
-    if ("PointerEvent" in window) {
-      // @ts-ignore - PointerEvent init differs slightly
-      const ev = new PointerEvent(type, { pointerId: 1, pointerType: "mouse", ...common });
-      target.dispatchEvent(ev);
-    } else {
-      const ev = new MouseEvent(type, common);
-      target.dispatchEvent(ev);
-    }
-  } catch {
-    const ev = new MouseEvent(type, common);
-    target.dispatchEvent(ev);
-  }
-}
-
-function dispatchInputChange(el: HTMLInputElement) {
-  el.dispatchEvent(new Event("input", { bubbles: true }));
-  el.dispatchEvent(new Event("change", { bubbles: true }));
-}
+import React, { useMemo, useState } from "react";
+import CursorController, { type GuideOptions } from "./CursorController";
 
 export async function guideCursorTo(id: string, options: GuideOptions = {}) {
-  const {
-    action = "none",
-    durationMs = 800,
-    easing = "ease-in-out",
-    offset,
-    highlight = true,
-    toValue,
-    toElementId,
-  } = options;
-
-  const target = document.getElementById(id);
-  if (!target) {
-    console.warn(`[guideCursorTo] No element with id="${id}"`);
-    return;
+  if (typeof window !== "undefined" && (window as any).__cursorGuide) {
+    return (window as any).__cursorGuide(id, options);
   }
-
-  // Ensure on screen
-  target.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
-  await new Promise((r) => setTimeout(r, 180));
-
-  const cursor = getOrCreateCursor();
-  cursor.style.opacity = "1"; // show
-
-  const from = {
-    x: parseFloat(cursor.style.left || "20") || 20,
-    y: parseFloat(cursor.style.top || "20") || 20,
-  };
-  const to = applyOffset(getCenterPoint(target), offset);
-
-  await animatePosition(cursor, from, to, durationMs, easing);
-
-  // Optional highlight pulse on target
-  if (highlight) {
-    (cursor as any).classList?.add("click");
-    setTimeout(() => (cursor as any).classList?.remove("click"), 180);
-  }
-
-  // Perform action
-  if (action === "click") {
-    const p = getCenterPoint(target);
-    dispatchMouseLike(target, "pointerdown", p);
-    dispatchMouseLike(target, "mousedown", p);
-    dispatchMouseLike(target, "mouseup", p);
-    dispatchMouseLike(target, "click", p);
-    if (target instanceof HTMLElement) target.focus?.();
-  } else if (action === "drag") {
-    const startPoint = getCenterPoint(target);
-    dispatchMouseLike(target, "pointerdown", startPoint);
-    dispatchMouseLike(target, "mousedown", startPoint);
-
-    let endPoint = startPoint;
-
-    // Drag to another element center if provided
-    if (toElementId) {
-      const endEl = document.getElementById(toElementId);
-      if (endEl) endPoint = getCenterPoint(endEl);
-    }
-
-    // Drag a range slider to a value if applicable
-    if ((target as HTMLInputElement).tagName === "INPUT" && (target as HTMLInputElement).type === "range" && typeof toValue === "number") {
-      const input = target as HTMLInputElement;
-      const r = input.getBoundingClientRect();
-      const min = isNaN(parseFloat(input.min)) ? 0 : parseFloat(input.min);
-      const max = isNaN(parseFloat(input.max)) ? 100 : parseFloat(input.max);
-      const next = clamp(toValue, min, max);
-      const t = (next - min) / (max - min || 1);
-      endPoint = { x: r.left + r.width * t, y: r.top + r.height / 2 };
-
-      // Simulate a smooth drag with multiple pointermoves + value updates
-      const steps = 20;
-      for (let i = 1; i <= steps; i++) {
-        const k = i / steps;
-        const xi = startPoint.x + (endPoint.x - startPoint.x) * k;
-        const yi = startPoint.y + (endPoint.y - startPoint.y) * k;
-        dispatchMouseLike(target, "pointermove", { x: xi, y: yi });
-        dispatchMouseLike(target, "mousemove", { x: xi, y: yi });
-        // Update value progressively for visual feedback
-        const vi = min + (next - min) * k;
-        input.value = String(vi);
-        dispatchInputChange(input);
-        // Move the fake cursor along with the drag
-        const cx = parseFloat(cursor.style.left);
-        const cy = parseFloat(cursor.style.top);
-        const dx = xi - cx;
-        const dy = yi - cy;
-        cursor.style.left = `${cx + dx / 1}px`;
-        cursor.style.top = `${cy + dy / 1}px`;
-        // small delay to make it visible
-        // eslint-disable-next-line no-await-in-loop
-        await new Promise((r) => setTimeout(r, Math.max(4, durationMs / steps / 2)));
-      }
-    } else {
-      // Generic drag animation: move fake cursor then send move events
-      await animatePosition(cursor, startPoint, endPoint, Math.max(300, durationMs * 0.6), easing);
-      dispatchMouseLike(target, "pointermove", endPoint);
-      dispatchMouseLike(target, "mousemove", endPoint);
-    }
-
-    dispatchMouseLike(target, "pointerup", endPoint);
-    dispatchMouseLike(target, "mouseup", endPoint);
-  }
-
-  // Optionally hide cursor after a while
-  setTimeout(() => {
-    cursor.style.opacity = "0.9"; // keep visible but subtle
-  }, 250);
+  console.warn("[guideCursorTo] CursorController is not mounted yet");
 }
 
 // Expose globally for easy manual triggering in console if needed
@@ -225,14 +16,111 @@ if (typeof window !== "undefined") {
   (window as any).guideCursorTo = guideCursorTo;
 }
 
+
 export default function DemoPage() {
   const [rangeValue, setRangeValue] = useState(20);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [country, setCountry] = useState("us");
+  // Complex page state
+  const [username, setUsername] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [dob, setDob] = useState("");
+  const [phone, setPhone] = useState("");
+  const [address1, setAddress1] = useState("");
+  const [address2, setAddress2] = useState("");
+  const [city, setCity] = useState("");
+  const [stateCode, setStateCode] = useState("CA");
+  const [zip, setZip] = useState("");
+  const [prefDarkMode, setPrefDarkMode] = useState(false);
+  const [prefEmailMe, setPrefEmailMe] = useState(true);
+  const [timezone, setTimezone] = useState("UTC");
+  const [activeTab, setActiveTab] = useState<"users" | "settings" | "stats">("users");
+  const [modalOpen, setModalOpen] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [accOpen, setAccOpen] = useState<{[k: number]: boolean}>({ 1: true, 2: false, 3: false });
+  const [fileObj, setFileObj] = useState<File | null>(null);
+  const [sortKey, setSortKey] = useState<"name" | "role" | "score">("name");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [rows, setRows] = useState<Array<{ id: number; name: string; role: string; score: number }>>([
+    { id: 1, name: "Alice", role: "Admin", score: 92 },
+    { id: 2, name: "Bob", role: "User", score: 67 },
+    { id: 3, name: "Charlie", role: "User", score: 78 },
+    { id: 4, name: "Dana", role: "Manager", score: 85 },
+  ]);
+  const sortedRows = useMemo(() => {
+    const copy = [...rows];
+    copy.sort((a, b) => {
+      const n = sortKey === "score" ? a.score - b.score : String(a[sortKey]).localeCompare(String(b[sortKey]));
+      return sortDir === "asc" ? n : -n;
+    });
+    return copy;
+  }, [rows, sortKey, sortDir]);
+  const [backlog, setBacklog] = useState<Array<{ id: string; title: string }>>([
+    { id: "b1", title: "Integrate payments" },
+    { id: "b2", title: "Add audit logs" },
+    { id: "b3", title: "Write docs" },
+  ]);
+  const [doing, setDoing] = useState<Array<{ id: string; title: string }>>([
+    { id: "d1", title: "Fix login bug" },
+  ]);
+
+  // Handlers
+  function toggleSort(key: "name" | "role" | "score") {
+    if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+  }
+
+  function startProgress() {
+    setProgress(0);
+    const total = 100;
+    const step = 5;
+    const id = window.setInterval(() => {
+      setProgress((p) => {
+        const np = Math.min(total, p + step);
+        if (np >= total) window.clearInterval(id);
+        return np;
+      });
+    }, 120);
+  }
+
+  async function demoOpenModalAndConfirm() {
+    await guideCursorTo("openModalBtn", { action: "click", durationMs: 700 });
+    await new Promise((r) => setTimeout(r, 250));
+    await guideCursorTo("confirmModalBtn", { action: "click", durationMs: 700 });
+  }
+
+  async function demoSwitchToStatsAndStartProgress() {
+    await guideCursorTo("tabStats", { action: "click", durationMs: 700 });
+    await new Promise((r) => setTimeout(r, 150));
+    await guideCursorTo("progressStartBtn", { action: "click", durationMs: 700 });
+  }
+
+  async function demoSortByScore() {
+    await guideCursorTo("sortScore", { action: "click" });
+  }
+
+  async function demoExpandAccordion2() {
+    await guideCursorTo("accItem2Btn", { action: "click" });
+  }
+
+  async function demoMoveFirstCardToDoing() {
+    if (backlog.length === 0) return;
+    await guideCursorTo("cardBacklog0", { action: "drag", toElementId: "doingDrop", durationMs: 700 });
+    // Simulate move after drag
+    setBacklog((b) => {
+      const first = b[0];
+      setDoing((d) => [first, ...d]);
+      return b.slice(1);
+    });
+  }
 
   return (
     <main className="min-h-dvh p-6 md:p-10 max-w-4xl mx-auto">
+      <CursorController />
       <h1 className="text-2xl font-semibold mb-4">Interactive Demo</h1>
       <p className="text-sm opacity-80 mb-6">
         This page includes various inputs and a programmable fake cursor. Use the
@@ -414,6 +302,236 @@ export default function DemoPage() {
           <p className="text-xs opacity-70">
             You can also call <code>window.guideCursorTo(id, options)</code> from the browser console.
           </p>
+        </div>
+      </section>
+      {/* Complex Form */}
+      <section className="mt-10 grid md:grid-cols-2 gap-8">
+        <div className="space-y-5">
+          <h2 className="font-medium">Complex Form</h2>
+          <div className="rounded-lg border p-4 space-y-4">
+            <fieldset className="space-y-3">
+              <legend className="text-sm font-medium">Account</legend>
+              <div>
+                <label htmlFor="usernameInput" className="block text-sm mb-1">Username</label>
+                <input id="usernameInput" className="w-full rounded-md border px-3 py-2" value={username} onChange={(e)=>setUsername(e.target.value)} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="passwordInput2" className="block text-sm mb-1">Password</label>
+                  <input id="passwordInput2" type="password" className="w-full rounded-md border px-3 py-2" />
+                </div>
+                <div>
+                  <label htmlFor="confirmPassword" className="block text-sm mb-1">Confirm</label>
+                  <input id="confirmPassword" type="password" className="w-full rounded-md border px-3 py-2" value={confirmPassword} onChange={(e)=>setConfirmPassword(e.target.value)} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="dobInput" className="block text-sm mb-1">Date of Birth</label>
+                  <input id="dobInput" type="date" className="w-full rounded-md border px-3 py-2" value={dob} onChange={(e)=>setDob(e.target.value)} />
+                </div>
+                <div>
+                  <label htmlFor="phoneInput2" className="block text-sm mb-1">Phone</label>
+                  <input id="phoneInput2" className="w-full rounded-md border px-3 py-2" placeholder="+1 555 0123" value={phone} onChange={(e)=>setPhone(e.target.value)} />
+                </div>
+              </div>
+            </fieldset>
+            <fieldset className="space-y-3">
+              <legend className="text-sm font-medium">Address</legend>
+              <div>
+                <label htmlFor="addr1" className="block text-sm mb-1">Address line 1</label>
+                <input id="addr1" className="w-full rounded-md border px-3 py-2" value={address1} onChange={(e)=>setAddress1(e.target.value)} />
+              </div>
+              <div>
+                <label htmlFor="addr2" className="block text-sm mb-1">Address line 2</label>
+                <input id="addr2" className="w-full rounded-md border px-3 py-2" value={address2} onChange={(e)=>setAddress2(e.target.value)} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="cityInput" className="block text-sm mb-1">City</label>
+                  <input id="cityInput" className="w-full rounded-md border px-3 py-2" value={city} onChange={(e)=>setCity(e.target.value)} />
+                </div>
+                <div>
+                  <label htmlFor="stateSelect" className="block text-sm mb-1">State</label>
+                  <select id="stateSelect" className="w-full rounded-md border px-3 py-2" value={stateCode} onChange={(e)=>setStateCode(e.target.value)}>
+                    <option value="CA">CA</option>
+                    <option value="NY">NY</option>
+                    <option value="TX">TX</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label htmlFor="zipInput" className="block text-sm mb-1">ZIP</label>
+                <input id="zipInput" className="w-full rounded-md border px-3 py-2" value={zip} onChange={(e)=>setZip(e.target.value)} />
+              </div>
+            </fieldset>
+            <fieldset className="space-y-3">
+              <legend className="text-sm font-medium">Preferences</legend>
+              <div className="flex items-center gap-4">
+                <label className="inline-flex items-center gap-2">
+                  <input id="prefDark" type="checkbox" className="size-4" checked={prefDarkMode} onChange={(e)=>setPrefDarkMode(e.target.checked)} />
+                  <span className="text-sm">Dark mode</span>
+                </label>
+                <label className="inline-flex items-center gap-2">
+                  <input id="prefEmail" type="checkbox" className="size-4" checked={prefEmailMe} onChange={(e)=>setPrefEmailMe(e.target.checked)} />
+                  <span className="text-sm">Email me updates</span>
+                </label>
+              </div>
+              <div>
+                <label htmlFor="timezoneSelect" className="block text-sm mb-1">Timezone</label>
+                <select id="timezoneSelect" className="w-full rounded-md border px-3 py-2" value={timezone} onChange={(e)=>setTimezone(e.target.value)}>
+                  <option>UTC</option>
+                  <option>PST</option>
+                  <option>EST</option>
+                  <option>CET</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="fileInput" className="block text-sm mb-1">Upload avatar</label>
+                <input id="fileInput" type="file" className="w-full rounded-md border px-3 py-2 bg-white" onChange={(e)=>setFileObj(e.target.files?.[0] ?? null)} />
+                <p className="text-xs opacity-70 mt-1">{fileObj ? `Selected: ${fileObj.name}` : "No file selected"}</p>
+              </div>
+            </fieldset>
+            <div className="flex gap-3">
+              <button id="saveProfileBtn" className="rounded-md bg-emerald-600 text-white px-4 py-2 hover:bg-emerald-700">Save Profile</button>
+              <button id="resetProfileBtn" className="rounded-md border px-4 py-2" onClick={()=>{
+                setUsername(""); setConfirmPassword(""); setDob(""); setPhone(""); setAddress1(""); setAddress2(""); setCity(""); setStateCode("CA"); setZip(""); setPrefDarkMode(false); setPrefEmailMe(true); setTimezone("UTC"); setFileObj(null);
+              }}>Reset</button>
+            </div>
+          </div>
+        </div>
+
+        {/* Components */}
+        <div className="space-y-6">
+          <h2 className="font-medium">Components</h2>
+          {/* Tabs */}
+          <div className="rounded-lg border">
+            <div className="flex border-b">
+              <button id="tabUsers" className={`px-4 py-2 text-sm ${activeTab==='users' ? 'border-b-2 border-blue-600 text-blue-600' : ''}`} onClick={()=>setActiveTab('users')}>Users</button>
+              <button id="tabSettings" className={`px-4 py-2 text-sm ${activeTab==='settings' ? 'border-b-2 border-blue-600 text-blue-600' : ''}`} onClick={()=>setActiveTab('settings')}>Settings</button>
+              <button id="tabStats" className={`px-4 py-2 text-sm ${activeTab==='stats' ? 'border-b-2 border-blue-600 text-blue-600' : ''}`} onClick={()=>setActiveTab('stats')}>Stats</button>
+            </div>
+            <div className="p-4">
+              {activeTab === 'users' && (
+                <div className="space-y-3">
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                      <thead>
+                        <tr className="text-left">
+                          <th><button id="sortName" className="px-2 py-1 rounded hover:bg-neutral-100" onClick={()=>toggleSort('name')}>Name</button></th>
+                          <th><button id="sortRole" className="px-2 py-1 rounded hover:bg-neutral-100" onClick={()=>toggleSort('role')}>Role</button></th>
+                          <th><button id="sortScore" className="px-2 py-1 rounded hover:bg-neutral-100" onClick={()=>toggleSort('score')}>Score</button></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sortedRows.map((r)=> (
+                          <tr key={r.id} className="border-t hover:bg-neutral-50">
+                            <td className="px-2 py-2">{r.name}</td>
+                            <td className="px-2 py-2">{r.role}</td>
+                            <td className="px-2 py-2">{r.score}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <button id="addRowBtn" className="rounded-md border px-3 py-2" onClick={()=> setRows((rs)=> [...rs, { id: Date.now(), name: `User ${rs.length+1}`, role: 'User', score: Math.floor(Math.random()*100)}])}>Add Row</button>
+                </div>
+              )}
+              {activeTab === 'settings' && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-4">
+                    <label className="inline-flex items-center gap-2">
+                      <input type="checkbox" className="size-4" checked={prefDarkMode} onChange={(e)=>setPrefDarkMode(e.target.checked)} />
+                      <span className="text-sm">Enable dark mode</span>
+                    </label>
+                    <label className="inline-flex items-center gap-2">
+                      <input type="checkbox" className="size-4" checked={prefEmailMe} onChange={(e)=>setPrefEmailMe(e.target.checked)} />
+                      <span className="text-sm">Email me tips</span>
+                    </label>
+                  </div>
+                  <button id="openModalBtn" className="rounded-md bg-blue-600 text-white px-3 py-2" onClick={()=> setModalOpen(true)}>Open Modal</button>
+                </div>
+              )}
+              {activeTab === 'stats' && (
+                <div className="space-y-3">
+                  <div>
+                    <div aria-label="progress" id="progressBar" className="h-2 bg-neutral-200 rounded">
+                      <div className="h-2 bg-green-600 rounded" style={{ width: `${progress}%` }} />
+                    </div>
+                    <p className="text-xs mt-1">{progress}%</p>
+                  </div>
+                  <button id="progressStartBtn" className="rounded-md border px-3 py-2" onClick={startProgress}>Start</button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Accordion */}
+          <div className="rounded-lg border divide-y">
+            {[1,2,3].map((i)=> (
+              <div key={i}>
+                <button id={`accItem${i}Btn`} className="w-full text-left px-4 py-3 hover:bg-neutral-50" onClick={()=> setAccOpen((o)=> ({...o, [i]: !o[i]}))}>
+                  <span className="font-medium">Section {i}</span>
+                </button>
+                {accOpen[i] && (
+                  <div className="px-4 pb-4 text-sm opacity-80">This is the content of accordion item {i}.</div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Kanban-like Cards */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="rounded-lg border p-3">
+              <h3 className="font-medium mb-2">Backlog</h3>
+              <div className="space-y-2">
+                {backlog.map((c, idx)=> (
+                  <div id={`cardBacklog${idx}`} key={c.id} className="rounded border bg-white px-3 py-2 shadow-sm">
+                    {c.title}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div id="doingDrop" className="rounded-lg border p-3">
+              <h3 className="font-medium mb-2">Doing</h3>
+              <div className="space-y-2">
+                {doing.map((c)=> (
+                  <div key={c.id} className="rounded border bg-white px-3 py-2 shadow-sm">{c.title}</div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Modal */}
+      {modalOpen && (
+        <div className="fixed inset-0 z-[1000] grid place-items-center bg-black/40">
+          <div className="bg-white text-neutral-900 rounded-lg shadow-lg w-[min(92vw,480px)] p-4">
+            <h3 className="font-medium mb-2">Confirm Action</h3>
+            <p className="text-sm opacity-80 mb-4">Are you sure you want to proceed?</p>
+            <div className="flex justify-end gap-2">
+              <button id="cancelModalBtn" className="rounded-md border px-3 py-2" onClick={()=> setModalOpen(false)}>Cancel</button>
+              <button id="confirmModalBtn" className="rounded-md bg-blue-600 text-white px-3 py-2" onClick={()=> setModalOpen(false)}>Confirm</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* More Cursor Demos */}
+      <section className="mt-10 space-y-3">
+        <h2 className="font-medium">More Cursor Demos</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={()=> guideCursorTo('usernameInput', { action: 'click' })}>Focus Username</button>
+          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={()=> guideCursorTo('addr1', { action: 'click' })}>Focus Address 1</button>
+          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={()=> guideCursorTo('stateSelect', { action: 'click' })}>Open State Select</button>
+          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={()=> guideCursorTo('fileInput', { action: 'click' })}>Click File Upload</button>
+          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={demoSortByScore}>Sort Table by Score</button>
+          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={()=> guideCursorTo('tabSettings', { action: 'click' })}>Switch to Settings tab</button>
+          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={demoOpenModalAndConfirm}>Open Modal then Confirm</button>
+          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={demoSwitchToStatsAndStartProgress}>Go to Stats and Start</button>
+          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={demoExpandAccordion2}>Expand Accordion 2</button>
+          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={demoMoveFirstCardToDoing}>Move first card to Doing</button>
         </div>
       </section>
     </main>

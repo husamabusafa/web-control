@@ -1,0 +1,74 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e1]:
+  - main [ref=e2]:
+    - heading "Interactive Demo" [level=1] [ref=e3]
+    - paragraph [ref=e4]:
+      - text: This page includes various inputs and a programmable fake cursor. Use the demo buttons to see it move, click, and drag. Try the route at
+      - code [ref=e5]: /demo
+      - text: .
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - generic [ref=e9]: Name
+          - textbox "Name" [ref=e10]
+        - generic [ref=e11]:
+          - generic [ref=e12]: Email
+          - textbox "Email" [ref=e13]
+        - generic [ref=e14]:
+          - generic [ref=e15]: Password
+          - textbox "Password" [ref=e16]
+        - generic [ref=e17]:
+          - generic [ref=e18]: Bio
+          - textbox "Bio" [ref=e19]
+        - generic [ref=e20]:
+          - generic [ref=e21]:
+            - checkbox "Subscribe" [ref=e22]
+            - generic [ref=e23]: Subscribe
+          - generic [ref=e24]:
+            - checkbox "Agree to terms" [ref=e25]
+            - generic [ref=e26]: Agree to terms
+        - generic [ref=e27]:
+          - generic [ref=e28]:
+            - radio "User" [checked] [ref=e29]
+            - generic [ref=e30]: User
+          - generic [ref=e31]:
+            - radio "Admin" [ref=e32]
+            - generic [ref=e33]: Admin
+        - generic [ref=e34]:
+          - generic [ref=e35]: Country
+          - combobox "Country" [ref=e36]:
+            - option "United States" [selected]
+            - option "United Kingdom"
+            - option "Saudi Arabia"
+            - option "Germany"
+        - generic [ref=e37]:
+          - generic [ref=e38]:
+            - text: "Volume:"
+            - generic [ref=e39]: "10"
+          - 'slider "Volume: 10" [ref=e40]': "10"
+        - generic [ref=e41]:
+          - button "Submit" [ref=e42]
+          - button "Reset" [ref=e43]
+      - generic [ref=e44]:
+        - heading "Cursor Demos" [level=2] [ref=e45]
+        - paragraph [ref=e46]: Click a demo to watch the cursor move and act.
+        - generic [ref=e47]:
+          - button "Focus Name (click)" [ref=e48]
+          - button "Focus Email (click)" [ref=e49]
+          - button "Open Country Select (click)" [ref=e50]
+          - button "Click Submit" [ref=e51]
+          - button "Drag Volume to 80" [ref=e52]
+          - button "Drag Volume to 10" [active] [ref=e53]
+        - paragraph [ref=e54]:
+          - text: You can also call
+          - code [ref=e55]: window.guideCursorTo(id, options)
+          - text: from the browser console.
+  - button "Open Next.js Dev Tools" [ref=e61] [cursor=pointer]:
+    - img [ref=e62] [cursor=pointer]
+  - alert [ref=e65]
+  - generic:
+    - generic:
+      - img
+```

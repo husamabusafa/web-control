@@ -27,32 +27,43 @@ body {
 
 /* Fake cursor styles for the demo */
 .fake-cursor {
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   position: fixed;
   left: 0;
   top: 0;
   transform: translate(-50%, -50%);
-  border-radius: 9999px;
-  border: 2px solid rgba(17, 17, 17, 0.9);
-  background: #fff;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
   pointer-events: none;
   z-index: 2147483647; /* on top */
-  transition: opacity 150ms ease;
+  opacity: 0;
+  transition: opacity 220ms ease, transform 140ms ease;
 }
 
-.fake-cursor::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 6px;
-  height: 6px;
-  background: rgba(17, 17, 17, 0.95);
-  border-radius: 9999px;
-  transform: translate(-50%, -50%);
+.fake-cursor.visible {
+  opacity: 1;
 }
+
+.fake-cursor.pressing {
+  transform: translate(-50%, -50%) scale(0.96);
+}
+
+.fake-cursor .arrow,
+.fake-cursor .pointer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+}
+
+.fake-cursor .arrow svg,
+.fake-cursor .pointer svg {
+  width: 100%;
+  height: 100%;
+}
+
+.fake-cursor.as-arrow .arrow { display: block; }
+.fake-cursor.as-pointer .pointer { display: block; }
 
 /* quick pulse ring when clicking */
 .fake-cursor.click::before {
