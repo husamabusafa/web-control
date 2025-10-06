@@ -3,22 +3,74 @@
 import React, { useEffect } from "react";
 import { createRoot, Root } from "react-dom/client";
 
+/**
+ * CursorController
+ *
+ * Mount this component once on a page (e.g. in the demo at `/demo`). It registers a
+ * global function `window.__cursorGuide(stepsOrTarget, options?)` that moves a fake
+ * cursor to a target and optionally performs actions (click, drag).
+ *
+ * In `app/demo/page.tsx`, a convenience wrapper `guideCursorTo(targetOrSteps, options?)`
+ * is also exported and exposed globally as `window.guideCursorTo`.
+ *
+ * Quick examples (run in DevTools on /demo):
+ * ```js
+ * // Move to a screen position
+ * await window.guideCursorTo({ position: { x: 140, y: 160 } }, { durationMs: 700 });
+ *
+ * // Click an element by selector or id
+ * await window.guideCursorTo('#submitBtn', { action: 'click', anchor: 'center' });
+ *
+ * // Drag from one element to another
+ * await window.guideCursorTo({ selector: '#cardBacklog0' }, { action: 'drag', dragTo: '#doingDrop' });
+ *
+ * // Multi-step sequence
+ * await window.guideCursorTo([
+ *   { target: '#tabStats', action: 'click', options: { durationMs: 600 } },
+ *   { target: { position: { x: 100, y: 120 } } },
+ *   { target: '#progressStartBtn', action: 'click' },
+ * ]);
+ * ```
+ *
+ * Options highlights (see `GuideOptions`):
+ * - action: 'none' | 'click' | 'drag'
+ * - durationMs, easing: control motion speed/curve
+ * - path: 'straight' | 'curve', curveStrength, curveDirection
+ * - anchor: where inside the element to aim (e.g. 'center', 'top-left' or {x:0..1,y:0..1})
+ * - cursorHotspot: px offset to the click location
+ * - dragTo: target for drag action
+ */
+
 // Types for the public API
 export type GuideAction = "none" | "click" | "drag";
+
+export type GuideTarget =
+  | string // id or selector (resolved as id first)
+  | Element
+  | { selector: string; nth?: number; within?: Element | string }
+  | { position: { x: number; y: number } };
+
+export type Anchor = "center" | "top-left" | "bottom-right" | { x: number; y: number };
+
 export type GuideOptions = {
   action?: GuideAction;
   durationMs?: number; // total travel duration
   easing?: "ease" | "ease-in" | "ease-out" | "ease-in-out" | "linear";
   offset?: { x?: number; y?: number };
   highlight?: boolean; // briefly highlight target when reached
-  // Drag-specific options:
-  toValue?: number; // for input[type="range"] drag target value
-  toElementId?: string; // general drag target element id
   // Path options
   path?: "straight" | "curve"; // default curve
   curveStrength?: number; // 0..1, fraction of distance used as bend magnitude (default 0.25)
   curveDirection?: "auto" | "left" | "right"; // default auto
+  // New options
+  anchor?: Anchor; // where inside the element to aim
+  cursorHotspot?: { x?: number; y?: number }; // px offset added to click/press location
+  dragTo?: GuideTarget; // destination target for action='drag'
 };
+
+export type GuideStep = { target: GuideTarget; action?: GuideAction; options?: GuideOptions };
+export type GuideStepResult = { ok: boolean; action: GuideAction; targetKind: "element" | "position"; durationMs: number; clickedElementId?: string | null; error?: string };
+export type GuideRunResult = { ok: boolean; steps: GuideStepResult[] };
 
 // Cursor controller state (DOM-based, no React re-renders)
 let cursorReactRoot: Root | null = null;
@@ -214,7 +266,8 @@ async function animatePosition(
   easing: GuideOptions["easing"] = "ease-in-out",
   path: GuideOptions["path"] = "curve",
   curveStrength: number = 0.25,
-  curveDirection: GuideOptions["curveDirection"] = "auto"
+  curveDirection: GuideOptions["curveDirection"] = "auto",
+  onFrame?: (p: { x: number; y: number; t: number; now: number }) => void
 ) {
   // Keep the cursor visible for the entire duration of this animation
   keepCursorVisibleWhileMoving();
@@ -268,6 +321,7 @@ async function animatePosition(
       el.style.left = `${x + nx}px`;
       el.style.top = `${y + ny}px`;
       updateCursorColorAt(el, x + nx, y + ny);
+      if (onFrame) onFrame({ x: x + nx, y: y + ny, t, now });
       if (t < 1) requestAnimationFrame(frame);
       else resolve();
     }
@@ -300,12 +354,20 @@ function dispatchMouseLike(
   };
 
   try {
+    const isDown = type === "pointerdown" || type === "mousedown";
+    const isUp = type === "pointerup" || type === "mouseup";
+    const enriched = {
+      button: 0,
+      buttons: isDown ? 1 : 0,
+      isPrimary: true,
+      ...common,
+    };
     if ("PointerEvent" in window) {
       // @ts-ignore - PointerEvent init differs slightly
-      const ev = new PointerEvent(type, { pointerId: 1, pointerType: "mouse", ...common });
+      const ev = new PointerEvent(type, { pointerId: 1, pointerType: "mouse", ...enriched });
       target.dispatchEvent(ev);
     } else {
-      const ev = new MouseEvent(type, common);
+      const ev = new MouseEvent(type, enriched as MouseEventInit);
       target.dispatchEvent(ev);
     }
   } catch {
@@ -314,56 +376,121 @@ function dispatchMouseLike(
   }
 }
 
-function dispatchInputChange(el: HTMLInputElement) {
-  el.dispatchEvent(new Event("input", { bubbles: true }));
-  el.dispatchEvent(new Event("change", { bubbles: true }));
+function isElement(obj: any): obj is Element {
+  return obj && typeof obj === "object" && obj.nodeType === 1;
 }
+
+function resolveWithin(within?: Element | string | null): Element | Document {
+  if (!within) return document;
+  if (isElement(within)) return within;
+  if (typeof within === "string") {
+    const byId = document.getElementById(within);
+    if (byId) return byId;
+    const q = document.querySelector(within);
+    if (q) return q as Element;
+  }
+  return document;
+}
+
+function resolveTarget(target: GuideTarget): { kind: "element" | "position"; element?: Element | null; point?: { x: number; y: number } } {
+  if (isElement(target)) return { kind: "element", element: target };
+  if (typeof target === "string") {
+    const byId = document.getElementById(target);
+    if (byId) return { kind: "element", element: byId };
+    const q = document.querySelector(target);
+    return { kind: q ? "element" : "position", element: q ?? null };
+  }
+  if (typeof target === "object" && "position" in target) {
+    return { kind: "position", point: target.position };
+  }
+  if (typeof target === "object" && "selector" in target) {
+    const scope = resolveWithin(target.within ?? null);
+    const all = (scope as Element | Document).querySelectorAll(target.selector);
+    const idx = Math.max(0, Math.min(all.length - 1, target.nth ?? 0));
+    const el = all[idx] ?? null;
+    return { kind: el ? "element" : "position", element: el };
+  }
+  return { kind: "position", point: { x: 0, y: 0 } };
+}
+
+function getAnchoredPoint(el: Element, anchor?: Anchor) {
+  const r = el.getBoundingClientRect();
+  if (!anchor || anchor === "center") return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  if (anchor === "top-left") return { x: r.left, y: r.top };
+  if (anchor === "bottom-right") return { x: r.right, y: r.bottom };
+  const ax = clamp(anchor.x, 0, 1);
+  const ay = clamp(anchor.y, 0, 1);
+  return { x: r.left + r.width * ax, y: r.top + r.height * ay };
+}
+
+function clampToViewport(p: { x: number; y: number }) {
+  return { x: clamp(p.x, 0, window.innerWidth), y: clamp(p.y, 0, window.innerHeight) };
+}
+
+ 
 
 function CursorController() {
   useEffect(() => {
-    (window as any).__cursorGuide = async (id: string, options: GuideOptions = {}) => {
-      const {
-        action = "none",
-        durationMs = 800,
-        easing = "ease-in-out",
-        offset,
-        highlight = true,
-        toValue,
-        toElementId,
-        path = "curve",
-        curveStrength = 0.25,
-        curveDirection = "auto",
-      } = options;
+    (window as any).__cursorGuide = async (
+      stepsOrTarget: GuideTarget | GuideStep[],
+      options: GuideOptions = {}
+    ): Promise<GuideRunResult> => {
+      const steps: GuideStep[] = Array.isArray(stepsOrTarget)
+        ? stepsOrTarget
+        : [{ target: stepsOrTarget, action: options.action ?? "none", options }];
 
-      const target = document.getElementById(id);
-      if (!target) {
-        console.warn(`[guideCursorTo] No element with id="${id}"`);
-        return;
-      }
-
-      // Ensure on screen and wait for scrolling to settle to avoid misaligned clicks
-      target.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
-      await waitForScrollSettled(1500, 180);
-
+      const results: GuideStepResult[] = [];
       const cursor = await getOrCreateCursor();
       cursor.classList.add("visible", "as-arrow");
       cursor.classList.remove("as-pointer", "pressing");
       ensureCursorVisible(cursor);
       keepCursorVisibleWhileMoving();
-      // Set initial color based on current position
       const curX = parseFloat(cursor.style.left || "20") || 20;
       const curY = parseFloat(cursor.style.top || "20") || 20;
       updateCursorColorAt(cursor, curX, curY);
 
-      const from = {
-        x: parseFloat(cursor.style.left || "20") || 20,
-        y: parseFloat(cursor.style.top || "20") || 20,
-      };
-      const to = applyOffset(getCenterPoint(target), offset);
+      for (const s of steps) {
+        const {
+          durationMs = 800,
+          easing = "ease-in-out",
+          offset,
+          highlight = true,
+          path = "curve",
+          curveStrength = 0.25,
+          curveDirection = "auto",
+          anchor,
+          cursorHotspot,
+          dragTo,
+        } = s.options ?? {};
 
-      await animatePosition(cursor, from, to, durationMs, easing, path, curveStrength, curveDirection);
-      // Subtle overshoot and settle for more lifelike motion (skip for drags)
-      if (action !== "drag") {
+        const action: GuideAction = s.action ?? (s.options?.action ?? "none");
+        const t0 = performance.now();
+
+        const resolved = resolveTarget(s.target);
+        let targetPoint: { x: number; y: number } | null = null;
+        let targetElement: Element | null = null;
+        if (resolved.kind === "element" && resolved.element) {
+          targetElement = resolved.element;
+          targetElement.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+          await waitForScrollSettled(1500, 180);
+          targetPoint = getAnchoredPoint(targetElement, anchor);
+        } else if (resolved.kind === "position" && resolved.point) {
+          targetPoint = resolved.point;
+        }
+        if (!targetPoint) {
+          results.push({ ok: false, action, targetKind: resolved.kind, durationMs: Math.round(performance.now() - t0), error: "Target not found" });
+          continue;
+        }
+
+        const from = {
+          x: parseFloat(cursor.style.left || "20") || 20,
+          y: parseFloat(cursor.style.top || "20") || 20,
+        };
+        const to = clampToViewport(applyOffset(targetPoint, offset));
+
+        await animatePosition(cursor, from, to, durationMs, easing, path, curveStrength, curveDirection);
+
+        // Small overshoot and settle
         const dx = to.x - from.x;
         const dy = to.y - from.y;
         const dist = Math.hypot(dx, dy) || 1;
@@ -373,110 +500,71 @@ function CursorController() {
         const over = { x: to.x + ux * overshoot, y: to.y + uy * overshoot };
         await animatePosition(cursor, to, over, Math.max(70, durationMs * 0.1), "ease-out", "straight", 0, "right");
         await animatePosition(cursor, over, to, 120, "ease-out", "straight", 0, "left");
-      }
 
-      // Optional highlight pulse on target
-      if (highlight) {
-        (cursor as any).classList?.add("click");
-        setTimeout(() => (cursor as any).classList?.remove("click"), 180);
-      }
-
-      // Perform action
-      if (action === "click") {
-        const p = getCenterPoint(target);
-        // Visual: pointer shape + press
-        cursor.classList.remove("as-arrow");
-        cursor.classList.add("as-pointer", "pressing");
-        // Snap visual cursor to the exact click point to avoid mismatch
-        cursor.style.left = `${p.x}px`;
-        cursor.style.top = `${p.y}px`;
-        updateCursorColorAt(cursor, p.x, p.y);
-        dispatchMouseLike(target, "pointerdown", p);
-        dispatchMouseLike(target, "mousedown", p);
-        await new Promise((r) => setTimeout(r, 90));
-        cursor.classList.remove("pressing");
-        dispatchMouseLike(target, "mouseup", p);
-        dispatchMouseLike(target, "click", p);
-        // revert to arrow after brief moment
-        setTimeout(() => {
-          cursor.classList.remove("as-pointer");
-          cursor.classList.add("as-arrow");
-        }, 140);
-        if (target instanceof HTMLElement) target.focus?.();
-      } else if (action === "drag") {
-        const startPoint = getCenterPoint(target);
-        // Visual: pointer shape + press while dragging
-        cursor.classList.remove("as-arrow");
-        cursor.classList.add("as-pointer", "pressing");
-        keepCursorVisibleWhileMoving();
-        dispatchMouseLike(target, "pointerdown", startPoint);
-        dispatchMouseLike(target, "mousedown", startPoint);
-
-        let endPoint = startPoint;
-
-        // Drag to another element center if provided
-        if (toElementId) {
-          const endEl = document.getElementById(toElementId);
-          if (endEl) endPoint = getCenterPoint(endEl);
+        if (highlight) {
+          (cursor as any).classList?.add("click");
+          setTimeout(() => (cursor as any).classList?.remove("click"), 180);
         }
 
-        // Drag a range slider to a value if applicable
-        if ((target as HTMLInputElement).tagName === "INPUT" && (target as HTMLInputElement).type === "range" && typeof toValue === "number") {
-          const input = target as HTMLInputElement;
-          const r = input.getBoundingClientRect();
-          const min = isNaN(parseFloat(input.min)) ? 0 : parseFloat(input.min);
-          const max = isNaN(parseFloat(input.max)) ? 100 : parseFloat(input.max);
-          const next = clamp(toValue, min, max);
-          const t = (next - min) / (max - min || 1);
-          endPoint = { x: r.left + r.width * t, y: r.top + r.height / 2 };
+        let clickedId: string | null = null;
+        try {
+          if (action === "click") {
+            cursor.classList.remove("as-arrow");
+            cursor.classList.add("as-pointer", "pressing");
+            const hotspot = { x: cursorHotspot?.x ?? 0, y: cursorHotspot?.y ?? 0 };
+            const p = { x: to.x + hotspot.x, y: to.y + hotspot.y };
+            cursor.style.left = `${p.x}px`;
+            cursor.style.top = `${p.y}px`;
+            updateCursorColorAt(cursor, p.x, p.y);
+            const clickTarget = targetElement ?? document.elementFromPoint(p.x, p.y) ?? document.body;
+            dispatchMouseLike(clickTarget, "pointerdown", p);
+            dispatchMouseLike(clickTarget, "mousedown", p);
+            await new Promise((r) => setTimeout(r, 90));
+            cursor.classList.remove("pressing");
+            dispatchMouseLike(clickTarget, "mouseup", p);
+            dispatchMouseLike(clickTarget, "click", p);
+            setTimeout(() => {
+              cursor.classList.remove("as-pointer");
+              cursor.classList.add("as-arrow");
+            }, 140);
+            if (clickTarget instanceof HTMLElement) clickTarget.focus?.();
+            clickedId = (clickTarget as HTMLElement)?.id ?? null;
+          } else if (action === "drag") {
+            if (!dragTo) throw new Error("dragTo is required for action 'drag'");
+            const dest = resolveTarget(dragTo);
+            let destPoint: { x: number; y: number } | null = null;
+            if (dest.kind === "element" && dest.element) destPoint = getAnchoredPoint(dest.element, anchor);
+            if (dest.kind === "position" && dest.point) destPoint = dest.point;
+            if (!destPoint) throw new Error("dragTo target not found");
+            const dst = clampToViewport(applyOffset(destPoint, offset));
 
-          // Simulate a smooth drag with multiple pointermoves + value updates
-          const steps = 20;
-          for (let i = 1; i <= steps; i++) {
-            const k = i / steps;
-            const xi = startPoint.x + (endPoint.x - startPoint.x) * k;
-            const yi = startPoint.y + (endPoint.y - startPoint.y) * k;
-            dispatchMouseLike(target, "pointermove", { x: xi, y: yi });
-            dispatchMouseLike(target, "mousemove", { x: xi, y: yi });
-            // Update value progressively for visual feedback
-            const vi = min + (next - min) * k;
-            input.value = String(vi);
-            dispatchInputChange(input);
-            // Move the fake cursor along with the drag
-            const cx = parseFloat(cursor.style.left);
-            const cy = parseFloat(cursor.style.top);
-            const dx = xi - cx;
-            const dy = yi - cy;
-            cursor.style.left = `${cx + dx / 1}px`;
-            cursor.style.top = `${cy + dy / 1}px`;
-            updateCursorColorAt(cursor, xi, yi);
-            // small delay to make it visible
-            // eslint-disable-next-line no-await-in-loop
-            await new Promise((r) => setTimeout(r, Math.max(4, durationMs / steps / 2)));
+            const startP = { x: to.x, y: to.y };
+            const startTarget = targetElement ?? document.elementFromPoint(startP.x, startP.y) ?? document.body;
+            cursor.classList.remove("as-arrow");
+            cursor.classList.add("as-pointer", "pressing");
+            dispatchMouseLike(startTarget, "pointerdown", startP);
+            dispatchMouseLike(startTarget, "mousedown", startP);
+
+            await animatePosition(cursor, startP, dst, Math.max(200, durationMs), easing, path, curveStrength, curveDirection, ({ x, y }) => {
+              const moveTarget = document.elementFromPoint(x, y) ?? document.body;
+              dispatchMouseLike(moveTarget, "pointermove", { x, y });
+              dispatchMouseLike(moveTarget, "mousemove", { x, y });
+            });
+
+            const endTarget = document.elementFromPoint(dst.x, dst.y) ?? document.body;
+            cursor.classList.remove("pressing");
+            dispatchMouseLike(endTarget, "pointerup", dst);
+            dispatchMouseLike(endTarget, "mouseup", dst);
           }
-        } else {
-          // Generic drag animation: move fake cursor then send move events
-          await animatePosition(
-            cursor,
-            startPoint,
-            endPoint,
-            Math.max(300, durationMs * 0.6),
-            easing,
-            path,
-            curveStrength,
-            curveDirection
-          );
-          dispatchMouseLike(target, "pointermove", endPoint);
-          dispatchMouseLike(target, "mousemove", endPoint);
-        }
 
-        dispatchMouseLike(target, "pointerup", endPoint);
-        dispatchMouseLike(target, "mouseup", endPoint);
-        cursor.classList.remove("pressing", "as-pointer");
-        cursor.classList.add("as-arrow");
+          results.push({ ok: true, action, targetKind: resolved.kind, durationMs: Math.round(performance.now() - t0), clickedElementId: clickedId });
+        } catch (e: any) {
+          results.push({ ok: false, action, targetKind: resolved.kind, durationMs: Math.round(performance.now() - t0), error: e?.message ?? String(e) });
+        }
       }
-      // Schedule hide only after idle; never during movement
+
       stopMovingAndMaybeHide(cursor, 2000);
+      return { ok: results.every(r => r.ok), steps: results };
     };
     return () => {
       try {

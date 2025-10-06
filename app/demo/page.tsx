@@ -1,11 +1,12 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
-import CursorController, { type GuideOptions } from "./CursorController";
+import CursorController, { type GuideOptions, type GuideTarget, type GuideStep, type GuideRunResult } from "./CursorController";
+import { FillInput, FillActiveInput } from "./FillInput";
 
-export async function guideCursorTo(id: string, options: GuideOptions = {}) {
+export async function guideCursorTo(target: GuideTarget | GuideStep[], options: GuideOptions = {}): Promise<GuideRunResult | void> {
   if (typeof window !== "undefined" && (window as any).__cursorGuide) {
-    return (window as any).__cursorGuide(id, options);
+    return (window as any).__cursorGuide(target, options);
   }
   console.warn("[guideCursorTo] CursorController is not mounted yet");
 }
@@ -87,35 +88,93 @@ export default function DemoPage() {
     }, 120);
   }
 
-  async function demoOpenModalAndConfirm() {
-    await guideCursorTo("openModalBtn", { action: "click", durationMs: 700 });
-    await new Promise((r) => setTimeout(r, 250));
-    await guideCursorTo("confirmModalBtn", { action: "click", durationMs: 700 });
+  // New demo handlers using the updated CursorController API
+  async function testMoveToPosition() {
+    await guideCursorTo({ position: { x: 140, y: 160 } }, { durationMs: 700 });
   }
 
-  async function demoSwitchToStatsAndStartProgress() {
-    await guideCursorTo("tabStats", { action: "click", durationMs: 700 });
-    await new Promise((r) => setTimeout(r, 150));
-    await guideCursorTo("progressStartBtn", { action: "click", durationMs: 700 });
+  async function testAnchoredClick() {
+    await guideCursorTo("#submitBtn", { action: "click", anchor: "center", cursorHotspot: { x: 0, y: 0 }, durationMs: 600 });
   }
 
-  async function demoSortByScore() {
-    await guideCursorTo("sortScore", { action: "click" });
-  }
-
-  async function demoExpandAccordion2() {
-    await guideCursorTo("accItem2Btn", { action: "click" });
-  }
-
-  async function demoMoveFirstCardToDoing() {
+  async function testDragBacklogToDoing() {
     if (backlog.length === 0) return;
-    await guideCursorTo("cardBacklog0", { action: "drag", toElementId: "doingDrop", durationMs: 700 });
-    // Simulate move after drag
-    setBacklog((b) => {
-      const first = b[0];
-      setDoing((d) => [first, ...d]);
-      return b.slice(1);
-    });
+    const result = await guideCursorTo(
+      { selector: "#cardBacklog0" },
+      { action: "drag", dragTo: "#doingDrop", durationMs: 900 }
+    );
+    if (result && result.ok) {
+      setBacklog((b) => {
+        const first = b[0];
+        setDoing((d) => [first, ...d]);
+        return b.slice(1);
+      });
+    }
+  }
+
+  async function testMultiStepSequence() {
+    const steps: GuideStep[] = [
+      { target: "#tabStats", action: "click", options: { durationMs: 600 } },
+      { target: { position: { x: 100, y: 120 } } },
+      { target: "#progressStartBtn", action: "click", options: { durationMs: 600 } },
+    ];
+    const result = await (window as any).__cursorGuide(steps);
+    console.log("sequence result", result);
+  }
+
+  // FillInput demo handlers
+  async function runFillDemo1() {
+    try {
+      const demoFile = new File([new Blob(["demo"], { type: "text/plain" })], "demo.txt", { type: "text/plain" });
+      await FillInput("fi_name", "Jane Doe");
+      await FillInput("fi_email", "jane@example.com");
+      await FillInput("fi_password", "secret123");
+      await FillInput("fi_bio", "Hi, I'm Jane.\nThis was filled by FillInput.");
+      await FillInput("fi_newsletter", true);
+      await FillInput("fi_agree", true);
+      await FillInput("fi_role_admin", true);
+      await FillInput("fi_country2", "sa");
+      await FillInput("fi_tags", ["a", "c"]);
+      await FillInput("fi_dob", "1995-05-15");
+      await FillInput("fi_color", "#00aa88");
+      await FillInput("fi_avatar", demoFile);
+      await FillInput("about", "I am contenteditable text");
+      console.log("FillInput done");
+    } catch (e) {
+      console.warn("FillInput demo error", e);
+    }
+  }
+
+  async function clearFillDemo1() {
+    await FillInput("fi_name", "");
+    await FillInput("fi_email", "");
+    await FillInput("fi_password", "");
+    await FillInput("fi_bio", "");
+    await FillInput("fi_newsletter", false);
+    await FillInput("fi_agree", false);
+    await FillInput("fi_role_user", true);
+    await FillInput("fi_country2", "us");
+    await FillInput("fi_tags", []);
+    await FillInput("fi_dob", "");
+    await FillInput("fi_color", "#000000");
+    await FillInput("fi_avatar", []);
+    await FillInput("about", "");
+  }
+
+  // Active input demos using FillActiveInput
+  async function focusAndFillActiveName() {
+    (document.getElementById("fi_name") as HTMLElement | null)?.focus();
+    await FillActiveInput("Alice Active");
+  }
+
+  async function focusAndFillActiveCountry() {
+    (document.getElementById("fi_country2") as HTMLElement | null)?.focus();
+    await FillActiveInput("de");
+  }
+
+  async function focusAndFillActiveAbout() {
+    (document.getElementById("about") as HTMLElement | null)?.focus();
+    await FillActiveInput("Contenteditable filled via FillActiveInput");
   }
 
   return (
@@ -124,7 +183,7 @@ export default function DemoPage() {
       <h1 className="text-2xl font-semibold mb-4">Interactive Demo</h1>
       <p className="text-sm opacity-80 mb-6">
         This page includes various inputs and a programmable fake cursor. Use the
-        demo buttons to see it move, click, and drag. Try the route at <code>/demo</code>.
+        demo buttons to see it move and click. Try the route at <code>/demo</code>.
       </p>
 
       <section className="grid md:grid-cols-2 gap-8">
@@ -260,48 +319,109 @@ export default function DemoPage() {
 
         <div className="space-y-3">
           <h2 className="font-medium">Cursor Demos</h2>
-          <p className="text-sm opacity-80">Click a demo to watch the cursor move and act.</p>
+          <p className="text-sm opacity-80">New tests for position move, anchored click, drag, and multi-step.</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <button
-              className="rounded-md border px-3 py-2 hover:bg-neutral-100"
-              onClick={() => guideCursorTo("nameInput", { action: "click" })}
-            >
-              Focus Name (click)
-            </button>
-            <button
-              className="rounded-md border px-3 py-2 hover:bg-neutral-100"
-              onClick={() => guideCursorTo("emailInput", { action: "click" })}
-            >
-              Focus Email (click)
-            </button>
-            <button
-              className="rounded-md border px-3 py-2 hover:bg-neutral-100"
-              onClick={() => guideCursorTo("countrySelect", { action: "click" })}
-            >
-              Open Country Select (click)
-            </button>
-            <button
-              className="rounded-md border px-3 py-2 hover:bg-neutral-100"
-              onClick={() => guideCursorTo("submitBtn", { action: "click" })}
-            >
-              Click Submit
-            </button>
-            <button
-              className="rounded-md border px-3 py-2 hover:bg-neutral-100"
-              onClick={() => guideCursorTo("volumeSlider", { action: "drag", toValue: 80 })}
-            >
-              Drag Volume to 80
-            </button>
-            <button
-              className="rounded-md border px-3 py-2 hover:bg-neutral-100"
-              onClick={() => guideCursorTo("volumeSlider", { action: "drag", toValue: 10 })}
-            >
-              Drag Volume to 10
-            </button>
+            <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={testMoveToPosition}>Move to Position (140,160)</button>
+            <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={testAnchoredClick}>Click Submit (center)</button>
+            <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={testDragBacklogToDoing}>Drag first Backlog card to Doing</button>
+            <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={testMultiStepSequence}>Run Multi-step Sequence</button>
           </div>
           <p className="text-xs opacity-70">
-            You can also call <code>window.guideCursorTo(id, options)</code> from the browser console.
+            You can also call <code>window.guideCursorTo(target, options)</code> or pass an array of steps.
           </p>
+        </div>
+      </section>
+      {/* FillInput Demo */}
+      <section className="mt-10 grid md:grid-cols-2 gap-8">
+        <div className="space-y-5">
+          <h2 className="font-medium">FillInput Demo Form</h2>
+          <form id="demoForm1" className="rounded-lg border p-4 space-y-4">
+            <div>
+              <label htmlFor="fi_name" className="block text-sm mb-1">Name</label>
+              <input id="fi_name" name="name" className="w-full rounded-md border px-3 py-2" placeholder="Jane Doe" />
+            </div>
+            <div>
+              <label htmlFor="fi_email" className="block text-sm mb-1">Email</label>
+              <input id="fi_email" name="email" type="email" className="w-full rounded-md border px-3 py-2" placeholder="jane@example.com" />
+            </div>
+            <div>
+              <label htmlFor="fi_password" className="block text-sm mb-1">Password</label>
+              <input id="fi_password" name="password" type="password" className="w-full rounded-md border px-3 py-2" placeholder="••••••••" />
+            </div>
+            <div>
+              <label htmlFor="fi_bio" className="block text-sm mb-1">Bio</label>
+              <textarea id="fi_bio" name="bio" rows={3} className="w-full rounded-md border px-3 py-2" placeholder="Short description..." />
+            </div>
+            <div className="flex items-center gap-6">
+              <label className="inline-flex items-center gap-2">
+                <input id="fi_newsletter" name="newsletter" type="checkbox" className="size-4" />
+                <span className="text-sm">Subscribe</span>
+              </label>
+              <label className="inline-flex items-center gap-2">
+                <input id="fi_agree" name="agree" type="checkbox" className="size-4" />
+                <span className="text-sm">Agree to terms</span>
+              </label>
+            </div>
+            <div className="flex items-center gap-6">
+              <label className="inline-flex items-center gap-2">
+                <input id="fi_role_user" type="radio" name="role" value="user" className="size-4" defaultChecked />
+                <span className="text-sm">User</span>
+              </label>
+              <label className="inline-flex items-center gap-2">
+                <input id="fi_role_admin" type="radio" name="role" value="admin" className="size-4" />
+                <span className="text-sm">Admin</span>
+              </label>
+            </div>
+            <div>
+              <label htmlFor="fi_country2" className="block text-sm mb-1">Country</label>
+              <select id="fi_country2" name="country2" className="w-full rounded-md border px-3 py-2">
+                <option value="us">United States</option>
+                <option value="uk">United Kingdom</option>
+                <option value="sa">Saudi Arabia</option>
+                <option value="de">Germany</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="fi_tags" className="block text-sm mb-1">Tags (multi)</label>
+              <select id="fi_tags" name="tags" multiple className="w-full rounded-md border px-3 py-2 h-28">
+                <option value="a">Tag A</option>
+                <option value="b">Tag B</option>
+                <option value="c">Tag C</option>
+                <option value="d">Tag D</option>
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="fi_dob" className="block text-sm mb-1">Date of Birth</label>
+                <input id="fi_dob" name="dob" type="date" className="w-full rounded-md border px-3 py-2" />
+              </div>
+              <div>
+                <label htmlFor="fi_color" className="block text-sm mb-1">Favorite color</label>
+                <input id="fi_color" name="favColor" type="color" className="w-full rounded-md border px-3 py-2" />
+              </div>
+            </div>
+            <div>
+              <label htmlFor="fi_avatar" className="block text-sm mb-1">Avatar (file)</label>
+              <input id="fi_avatar" name="avatar" type="file" className="w-full rounded-md border px-3 py-2 bg-white" />
+              <p className="text-xs opacity-70 mt-1">Note: Programmatic file assignment may be restricted by the browser.</p>
+            </div>
+            <div>
+              <label className="block text-sm mb-1">About (contenteditable)</label>
+              <div id="about" contentEditable className="min-h-16 w-full rounded-md border px-3 py-2" />
+            </div>
+          </form>
+        </div>
+        <div className="space-y-3">
+          <h2 className="font-medium">FillInput Actions</h2>
+          <p className="text-sm opacity-80">Click to auto-fill or clear the demo form using <code>FillInput</code>.</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={runFillDemo1}>Fill Demo Form</button>
+            <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={clearFillDemo1}>Clear Demo Form</button>
+            <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={focusAndFillActiveName}>Focus Name then Fill Active</button>
+            <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={focusAndFillActiveCountry}>Focus Country then Fill Active</button>
+            <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={focusAndFillActiveAbout}>Focus About then Fill Active</button>
+          </div>
+          <p className="text-xs opacity-70">Also available in console: <code>window.FillInput(inputId, value, options)</code></p>
         </div>
       </section>
       {/* Complex Form */}
@@ -518,22 +638,7 @@ export default function DemoPage() {
         </div>
       )}
 
-      {/* More Cursor Demos */}
-      <section className="mt-10 space-y-3">
-        <h2 className="font-medium">More Cursor Demos</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={()=> guideCursorTo('usernameInput', { action: 'click' })}>Focus Username</button>
-          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={()=> guideCursorTo('addr1', { action: 'click' })}>Focus Address 1</button>
-          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={()=> guideCursorTo('stateSelect', { action: 'click' })}>Open State Select</button>
-          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={()=> guideCursorTo('fileInput', { action: 'click' })}>Click File Upload</button>
-          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={demoSortByScore}>Sort Table by Score</button>
-          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={()=> guideCursorTo('tabSettings', { action: 'click' })}>Switch to Settings tab</button>
-          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={demoOpenModalAndConfirm}>Open Modal then Confirm</button>
-          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={demoSwitchToStatsAndStartProgress}>Go to Stats and Start</button>
-          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={demoExpandAccordion2}>Expand Accordion 2</button>
-          <button className="rounded-md border px-3 py-2 hover:bg-neutral-100" onClick={demoMoveFirstCardToDoing}>Move first card to Doing</button>
-        </div>
-      </section>
+      {/* More Cursor Demos removed and replaced by the section above */}
     </main>
   );
 }
